@@ -1,0 +1,122 @@
+import dns.resolver,threading,time
+from multiprocessing import Queue
+import os
+# 引入two文件里面的Addres函数
+from two import Address
+
+class DNSBrute(object):
+	# 从dns_servers.txt 读取内容，保存到列表中
+	# 从 subname.txt 文档中读取内容，保存到Queue
+	def __init__(self,domainName,thread_NUM):
+		# 开始的域名 格式： baidu.com
+		self.domainName = domainName
+		# thread_NUM ： 开启的线程数量
+		self.thread_count = self.thread_NUM = thread_NUM
+		# scan_count : 扫描的数量
+		# found_count : 扫描到的域名的数量
+		self.scan_count = self.found_count = 0
+		# 线程锁，因为有很多的个线程同时操作，所以要有一个线程锁
+		self.lock = threading.Lock()
+		# 保存dns解析对象的列表   _ 为站位用
+		
+		self.resolvers = [dns.resolver.Resolver() for _ in range(thread_NUM)]
+
+		# 保存dns解析对象的列表,与上面代码实现一致
+		# self.resolvers = []
+		# for x in range(thread_NUM):
+		# 	# 创建一个dns解析对象
+		# 	new_resolver = dns.resolver.Resolver()
+		# 	# 添加进列表中
+		# 	self.resolvers.append(new_resolver)
+
+
+		self.load_dns_servers()
+		self.load_subname()
+		# 查找出来的ip地址的字典
+		self.ip_dict ={}
+		#
+		self.STOP_ME = False
+		# 查询出来的结果列表
+		# 在查询结束之后	要保存到数据库
+		self.result = []
+
+	def load_dns_servers(self):
+		dns_servers = []
+		with open('dns_servers.txt','r') as f:
+			for x in f:
+				# strip()  去掉字符串中的空格
+				server = x.strip()
+				# 将去掉空格的dns地址保存到数组中
+				dns_servers.append(server)
+		# 保存成全局通用,指整个类里面的环境
+		self.dns_servers = dns_servers
+		self.dns_count = len(dns_servers)
+
+
+	def load_subname(self):
+		self.queue = Queue()
+		with open('subnames.txt','r') as f:
+			for x in f:
+				subname = x.strip()
+				self.queue.put(subname)
+
+	# 查询二级域名的函数
+	def scan(self):
+		# 获取当前线程的名字
+		thread_id = int(threading.currentThread().name)
+		self.resolvers[thread_id].nameservers.insert(0,self.dns_servers[thread_id % self.dns_count])
+		self.resolvers[thread_id].lifetime = 10.0
+		self.resolvers[thread_id].timeout = 10.0
+		# qsize()  获取队列中任务数的函数
+		while self.queue.qsize() > 0 and not self.STOP_ME:
+			# QUEUE ->www ,map ,zhidao
+			# domainName -> baidu.com
+			# resolver ->查询 www.baidu.com 的对象
+			# 从队列中获取二级域名
+			sub = self.queue.get()
+			# 循环三次是因为对象中有三个dns服务器地址
+			for _ in range(3):
+				# sub_domain = www.baidu.com等二级域名
+				sub_domain = sub + '.' +self.domainName
+				try:
+					# 通过dns查询对象 去查询二级域名是否正确
+					answers = self.resolvers[thread_id].query(sub_domain)
+					if answers:
+						ips = ','.join(answer.address for answer in answers)
+						# 开启线程
+						self.lock.acquire()
+						# 发现的数量加
+						self.found_count +=1
+						print(self.found_count)
+						print(sub_domain,ips)
+						# 将结果保存到列表中
+						self.result.append((sub_domain,ips))
+						# 最后释放进程
+						self.lock.release()
+				except Exception as e:
+					pass
+			print(self.found_count,self.queue.qsize())
+		self.lock.acquire()
+		self.thread_count -= 1
+		self.lock.release()
+	def run(self):
+		for x in range(self.thread_NUM):
+			t = threading.Thread(target = self.scan,name = str(x))
+			# 这个线程会在主线程结束的时候被释放
+			t.setDaemon(True)
+			t.start()
+		# 下面代码的意义是只有用户在主动退出的时候才结束程序
+		while self.thread_count >1:
+			try:
+				time.sleep(0.5)
+			# KeyboardInterrupt 键盘输入退出 C+c
+			except KeyboardInterrupt as e:
+				self.STOP_ME = True
+		for x in self.result :
+			a = Address(x[0],x[1],self.domainName)
+			print(a)
+
+ 
+if __name__ == '__main__':
+	d = DNSBrute('lanou3g.com',60)
+	d.run()
